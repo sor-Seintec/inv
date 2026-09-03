@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Auditoria Escolar</title>
+  
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-mark" aria-hidden="true">AE</div>
+    <div>
+      <p class="eyebrow">CONTROLE ONLINE DE INVENTÁRIO</p>
+      <h1>Auditoria Escolar</h1>
+    </div>
+    <div class="topbar-status"><span class="pulse"></span> Auditoria executada pelo navegador</div>
+  </header>
+
+  <main>
+    <section class="config-panel" aria-labelledby="config-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow accent">CONFIGURAÇÃO</p>
+          <h2 id="config-title">Fontes da auditoria</h2>
+        </div>
+        <div class="config-actions">
+          <a class="inventory-download" href="https://seesp.sharepoint.com/sites/comunicadetec/Documentos%20Compartilhados/Forms/AllItems.aspx?id=%2Fsites%2Fcomunicadetec%2FDocumentos%20Compartilhados%2FInvent%C3%A1rio&viewid=aa943c0a%2D6583%2D4459%2Dbac2%2D168c7454df18&p=true&ga=1" target="_blank" rel="noopener noreferrer" title="Abrir a base de inventário no SharePoint">
+            <span class="download-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="20" height="20" fill="none"><path d="M12 3v11m0 0 4-4m-4 4-4-4M5 18.5h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </span>
+            <span><strong>Baixar base de inventário</strong><small>No SharePoint, baixe a pasta <b>Sorocaba</b></small></span>
+          </a>
+          <button id="scanButton" class="button primary" type="button">Processar auditoria</button>
+        </div>
+      </div>
+      <div class="config-grid upload-grid">
+        <label class="upload-card">
+          <span>1. Planilha matriz de compras</span>
+          <input id="matrixFile" class="file-input" type="file" accept=".xlsx,.xls">
+          <small id="matrixFileLabel">Selecione a planilha usada como matriz.</small>
+        </label>
+        <label class="upload-card">
+          <span>2. Pasta de inventários — Sorocaba</span>
+          <input id="inventoryFiles" class="file-input" type="file" accept=".xlsx" webkitdirectory directory multiple>
+          <small id="inventoryFileLabel">Selecione a pasta Sorocaba baixada do SharePoint.</small>
+        </label>
+      </div>
+      <div class="config-footer"><span>Os arquivos são processados <b>somente neste navegador</b>. Nenhuma planilha é enviada para o Vercel.</span><span id="databasePath"></span></div>
+    </section>
+
+    <section class="summary" aria-label="Resumo da auditoria">
+      <article class="metric"><div class="metric-icon blue">▤</div><div><span>Arquivos recebidos</span><strong id="totalFiles">—</strong></div></article>
+      <article class="metric"><div class="metric-icon green">✓</div><div><span>Equipamentos OK</span><strong id="equipmentOk">—</strong><small>Disponíveis ou OK</small></div></article>
+      <article class="metric"><div class="metric-icon amber">!</div><div><span>Garantia / manutenção</span><strong id="maintenanceCount">—</strong><small>Em atendimento</small></div></article>
+      <article class="metric"><div class="metric-icon red">×</div><div><span>Danificados / inservíveis</span><strong id="damagedCount">—</strong><small>Requerem ação</small></div></article>
+      <p id="statusCoverage" class="summary-note"></p>
+    </section>
+
+    <section class="results-panel">
+      <div class="results-header">
+        <div><p class="eyebrow accent">RESULTADOS</p><h2>Situação por escola</h2><p id="lastRun" class="muted">Nenhuma auditoria executada.</p></div>
+        <div class="filters">
+          <input id="search" type="search" placeholder="Buscar CIE ou escola" aria-label="Buscar CIE ou escola">
+          <select id="rankFilter" aria-label="Ordenar pelo status do equipamento"><option value="all">Todos os status</option><option value="equipment_ok">Equipamentos OK</option><option value="maintenance">Garantia / manutenção</option><option value="damaged">Danificados / inservíveis</option></select>
+          <div class="school-picker">
+            <button id="schoolPickerButton" class="picker-button" type="button" aria-expanded="false">Todas as escolas</button>
+            <div id="schoolPickerMenu" class="picker-menu hidden">
+              <input id="schoolPickerSearch" type="search" placeholder="Localizar escola" aria-label="Localizar escola">
+              <div class="picker-actions"><button id="selectAllSchools" type="button">Todas</button><button id="clearSchools" type="button">Limpar seleção</button></div>
+              <div id="schoolOptions" class="school-options"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="notice" class="notice hidden" role="status"></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th class="number">Rank</th><th>CIE</th><th>Escola</th><th>Arquivo</th><th>Situação</th><th class="number">Esperado</th><th class="number">Encontrado</th><th class="number">Faltando</th><th class="number">Sobrando</th><th class="number status-ok">OK</th><th class="number status-maintenance">Garantia / manutenção</th><th class="number status-damaged">Danificados / inservíveis</th></tr></thead>
+          <tbody id="results"><tr><td colspan="12" class="empty">Selecione a matriz e a pasta Sorocaba e clique em “Processar auditoria”.</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="detailDialog">
+    <div class="dialog-header"><div><p class="eyebrow accent">DETALHAMENTO</p><h2 id="detailTitle"></h2></div><button id="closeDialog" class="close" aria-label="Fechar">×</button></div>
+    <div id="detailBody"></div>
+  </dialog>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
