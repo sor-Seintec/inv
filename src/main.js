@@ -16,10 +16,11 @@ const FOLDER_STORE_NAME = 'settings';
 
 function openFolderDb() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(FOLDER_DB_NAME, 2);
+    const request = indexedDB.open(FOLDER_DB_NAME, 3);
     request.onupgradeneeded = () => {
       if (!request.result.objectStoreNames.contains(FOLDER_STORE_NAME)) request.result.createObjectStore(FOLDER_STORE_NAME);
       if (!request.result.objectStoreNames.contains('drive-files')) request.result.createObjectStore('drive-files');
+      if (!request.result.objectStoreNames.contains('audit-results')) request.result.createObjectStore('audit-results');
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -36,6 +37,17 @@ async function getCachedDriveFile(file) {
 async function cacheDriveFile(file, blob) {
   const db = await openFolderDb();
   await new Promise((resolve, reject) => { const tx=db.transaction('drive-files','readwrite'); tx.objectStore('drive-files').put({ id:file.id, name:file.name, mimeType:file.mimeType, modifiedTime:file.modifiedTime, lastModified:file.modifiedTime ? Date.parse(file.modifiedTime) : Date.now(), blob }, file.id); tx.oncomplete=resolve; tx.onerror=()=>reject(tx.error); });
+}
+
+async function saveLatestAudit(data) {
+  const db = await openFolderDb();
+  await new Promise((resolve, reject) => { const tx=db.transaction('audit-results','readwrite'); tx.objectStore('audit-results').put({ savedAt:new Date().toISOString(), data }, 'latest'); tx.oncomplete=resolve; tx.onerror=()=>reject(tx.error); });
+}
+
+async function getLatestAudit() {
+  const db = await openFolderDb();
+  const record = await new Promise((resolve, reject) => { const tx=db.transaction('audit-results','readonly'); const request=tx.objectStore('audit-results').get('latest'); request.onsuccess=()=>resolve(request.result||null); request.onerror=()=>reject(request.error); });
+  return record?.data || null;
 }
 
 async function saveFolderHandle(handle) {
@@ -440,7 +452,7 @@ $('#scanButton').addEventListener('click', async()=>{
   }
   if(!matrix)return showNotice('Selecione a planilha matriz de compras.',true); if(!inventories.length)return showNotice('Carregue a pasta do Google Drive ou selecione os inventários no computador.',true);
   button.disabled=true; button.textContent='Processando…'; showNotice(`Processando ${inventories.length} arquivo(s) localmente no navegador…`);
-  try{const data=await executeAudit(matrix,inventories); render(data); const invalid=data.upload.invalid_files.length; showNotice(`Auditoria concluída: ${data.last_run.total_files} arquivo(s) analisado(s)${invalid?` · ${invalid} arquivo(s) ignorado(s) por nome inválido`:''}. Nenhuma planilha foi enviada ao servidor.`);}catch(error){console.error(error);showNotice(error.message||String(error),true);}finally{button.disabled=false;button.textContent='Processar auditoria';}
+  try{const data=await executeAudit(matrix,inventories); await saveLatestAudit(data); render(data); const invalid=data.upload.invalid_files.length; showNotice(`Auditoria concluída: ${data.last_run.total_files} arquivo(s) analisado(s)${invalid?` · ${invalid} arquivo(s) ignorado(s) por nome inválido`:''}. Resultado salvo neste navegador.`);}catch(error){console.error(error);showNotice(error.message||String(error),true);}finally{button.disabled=false;button.textContent='Processar auditoria';}
 });
 $('#search').addEventListener('input',renderRows); $('#rankFilter').addEventListener('change',()=>renderDashboard());
 $('#schoolPickerButton').addEventListener('click',()=>{const menu=$('#schoolPickerMenu');menu.classList.toggle('hidden');$('#schoolPickerButton').setAttribute('aria-expanded',String(!menu.classList.contains('hidden')));});
@@ -451,3 +463,4 @@ $('#results').addEventListener('click',event=>{const row=event.target.closest('t
 $('#closeDialog').addEventListener('click',()=>$('#detailDialog').close()); $('#detailDialog').addEventListener('click',event=>{if(event.target===$('#detailDialog'))$('#detailDialog').close();});
 
 $('#databasePath').textContent='Processamento local no navegador';
+getLatestAudit().then(data=>{if(data){render(data);showNotice('Exibindo o último resultado salvo neste navegador.');}}).catch(()=>{});
