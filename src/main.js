@@ -3,7 +3,50 @@ import './app.css';
 
 const $ = (selector) => document.querySelector(selector);
 let schools = [];
+const DRIVE_FOLDER_ID = '1q4PHnubRVIsJ3LwBCbMpJNFYj-ztcQ96';
+const GOOGLE_DRIVE_API_KEY = import.meta.env.VITE_GOOGLE_DRIVE_API_KEY || '';
+let driveFiles = [];
+let driveSourceLoaded = false;
+let manualInventoryFiles = [];
 const selectedSchools = new Set();
+
+const FOLDER_DB_NAME = 'auditoria-escolar-config';
+const FOLDER_STORE_NAME = 'settings';
+
+function openFolderDb() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(FOLDER_DB_NAME, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(FOLDER_STORE_NAME);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function saveFolderHandle(handle) {
+  const db = await openFolderDb();
+  await new Promise((resolve, reject) => { const tx=db.transaction(FOLDER_STORE_NAME,'readwrite'); tx.objectStore(FOLDER_STORE_NAME).put(handle,'inventory-folder'); tx.oncomplete=resolve; tx.onerror=()=>reject(tx.error); });
+}
+
+async function getFolderHandle() {
+  const db = await openFolderDb();
+  return new Promise((resolve, reject) => { const tx=db.transaction(FOLDER_STORE_NAME,'readonly'); const request=tx.objectStore(FOLDER_STORE_NAME).get('inventory-folder'); request.onsuccess=()=>resolve(request.result||null); request.onerror=()=>reject(request.error); });
+}
+
+async function filesFromFolder(handle) {
+  const files = [];
+  for await (const entry of handle.values()) {
+    if (entry.kind === 'file' && entry.name.toLowerCase().endsWith('.xlsx') && !entry.name.startsWith('~$')) files.push(await entry.getFile());
+  }
+  return files;
+}
+
+async function useManualFolder(handle) {
+  if (handle.queryPermission && await handle.queryPermission({ mode: 'read' }) !== 'granted') await handle.requestPermission({ mode: 'read' });
+  manualInventoryFiles = await filesFromFolder(handle);
+  driveSourceLoaded = false;
+  renderDriveMatrixOptions();
+  $('#inventoryFileLabel').textContent = manualInventoryFiles.length ? `${manualInventoryFiles.length} arquivo(s) .xlsx selecionado(s) da pasta manual.` : 'Nenhum arquivo .xlsx encontrado nessa pasta.';
+}
 
 const labels = {
   OK: 'Sem divergência',
@@ -60,6 +103,58 @@ function expectedInfo(header) {
 async function workbookFromFile(file) {
   const data = await file.arrayBuffer();
   return XLSX.read(data, { type: 'array', cellDates: true });
+}
+
+async function listDriveFiles() {
+  if (!GOOGLE_DRIVE_API_KEY) throw new Error('Google Drive não configurado nesta publicação. Na Vercel, adicione a variável VITE_GOOGLE_DRIVE_API_KEY e faça um novo deploy.');
+  const fields = 'nextPageToken,files(id,name,mimeType,size,modifiedTime)';
+  const files = [];
+  let pageToken = '';
+  do {
+    const params = new URLSearchParams({
+      q: `'${DRIVE_FOLDER_ID}' in parents and trashed = false`,
+      fields, pageSize: '1000', orderBy: 'name', key: GOOGLE_DRIVE_API_KEY
+    });
+    if (pageToken) params.set('pageToken', pageToken);
+    const response = await fetch(`https://www.googleapis.com/drive/v3/files?${params}`);
+    if (!response.ok) throw new Error(response.status === 403 ? 'Google Drive recusou o acesso (403). Confira se a variável VITE_GOOGLE_DRIVE_API_KEY foi configurada na Vercel, se a Drive API está ativa e se o domínio está liberado na chave.' : `Não foi possível acessar o Google Drive (${response.status}). Verifique a chave e o compartilhamento da pasta.`);
+    const data = await response.json();
+    files.push(...(data.files || []));
+    pageToken = data.nextPageToken || '';
+  } while (pageToken);
+  return files.filter(file => file.name.toLowerCase().endsWith('.xlsx'));
+}
+
+async function downloadDriveFile(file) {
+  const params = new URLSearchParams({ alt: 'media', key: GOOGLE_DRIVE_API_KEY });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 45000);
+  let response;
+  try { response = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}?${params}`, { signal: controller.signal }); }
+  catch (error) { throw new Error(`Tempo excedido ao baixar ${file.name} do Google Drive.`); }
+  finally { clearTimeout(timeout); }
+  if (!response.ok) throw new Error(`Não foi possível baixar ${file.name} do Google Drive (${response.status}).`);
+  const blob = await response.blob();
+  return new File([blob], file.name, { type: file.mimeType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', lastModified: file.modifiedTime ? Date.parse(file.modifiedTime) : Date.now() });
+}
+
+async function downloadDriveFiles(files) {
+  const downloaded = [];
+  const batchSize = 6;
+  for (let index = 0; index < files.length; index += batchSize) {
+    const batch = files.slice(index, index + batchSize);
+    downloaded.push(...await Promise.all(batch.map(downloadDriveFile)));
+    $('#scanButton').textContent = `Baixando ${Math.min(index + batch.length, files.length)}/${files.length}…`;
+  }
+  return downloaded;
+}
+
+function renderDriveMatrixOptions() {
+  const select = $('#driveMatrixSelect');
+  const preferred = driveFiles.find(file => normalize(file.name).includes('COMPRAS CENTRALIZADAS'));
+  select.innerHTML = '<option value="">Escolha a matriz entre os arquivos do Drive</option>' + driveFiles.map(file => `<option value="${escapeHtml(file.id)}" ${file.id === preferred?.id ? 'selected' : ''}>${escapeHtml(file.name)}</option>`).join('');
+  select.classList.toggle('hidden', !driveSourceLoaded);
+  if (preferred) $('#matrixFileLabel').textContent = `Matriz selecionada automaticamente: ${preferred.name}`;
 }
 
 async function readMatrix(file) {
@@ -297,11 +392,32 @@ function openDetails(cie) {
   $('#detailBody').innerHTML=summary+error+comparison; $('#detailDialog').showModal();
 }
 
-$('#matrixFile').addEventListener('change',e=>{$('#matrixFileLabel').textContent=e.target.files[0]?.name||'Selecione a planilha usada como matriz.';});
-$('#inventoryFiles').addEventListener('change',e=>{const files=[...e.target.files].filter(f=>f.name.toLowerCase().endsWith('.xlsx')&&!f.name.startsWith('~$')); $('#inventoryFileLabel').textContent=files.length?`${files.length} arquivo(s) .xlsx selecionado(s).`:'Selecione a pasta Sorocaba baixada do SharePoint.';});
+$('#matrixFile').addEventListener('change',e=>{$('#matrixFileLabel').textContent=e.target.files[0]?.name||'Selecione a planilha usada como matriz.'; if(e.target.files[0] && driveSourceLoaded) $('#driveMatrixSelect').value='';});
+$('#inventoryFiles').addEventListener('change',e=>{const files=[...e.target.files].filter(f=>f.name.toLowerCase().endsWith('.xlsx')&&!f.name.startsWith('~$')); manualInventoryFiles=files; driveSourceLoaded=false; renderDriveMatrixOptions(); $('#inventoryFileLabel').textContent=files.length?`${files.length} arquivo(s) .xlsx selecionado(s).`:'Selecione uma pasta local com os inventários .xlsx.';});
+$('#chooseFolderButton').addEventListener('click',async()=>{if(!window.showDirectoryPicker)return showNotice('Seu navegador não oferece seleção persistente de pastas. Use o seletor de arquivos abaixo.',true);try{const handle=await window.showDirectoryPicker({mode:'read'});await saveFolderHandle(handle);await useManualFolder(handle);$('#lastFolderButton').classList.remove('hidden');showNotice(`Pasta manual carregada: ${manualInventoryFiles.length} arquivo(s) disponível(is).`);}catch(error){if(error.name!=='AbortError')showNotice(error.message||String(error),true);}});
+$('#lastFolderButton').addEventListener('click',async()=>{try{const handle=await getFolderHandle();if(!handle)return showNotice('Nenhuma pasta manual foi memorizada.',true);await useManualFolder(handle);showNotice(`Última pasta carregada: ${manualInventoryFiles.length} arquivo(s) disponível(is).`);}catch(error){showNotice('Não foi possível reabrir a última pasta. Selecione-a novamente.',true);}});
+getFolderHandle().then(handle=>{$('#lastFolderButton').classList.toggle('hidden',!handle);}).catch(()=>{});
+$('#loadDriveButton').addEventListener('click', async()=>{
+  const button=$('#loadDriveButton'); button.disabled=true; button.textContent='Carregando…';
+  try {
+    driveFiles = await listDriveFiles(); driveSourceLoaded = true; manualInventoryFiles = []; renderDriveMatrixOptions();
+    $('#driveFileLabel').textContent = `${driveFiles.length} arquivo(s) .xlsx encontrado(s) na pasta do Google Drive.`;
+    showNotice(`Pasta do Google Drive carregada: ${driveFiles.length} arquivo(s) disponível(is). Escolha a matriz e processe a auditoria.`);
+  } catch(error) { showNotice(error.message||String(error),true); }
+  finally { button.disabled=false; button.textContent='Atualizar arquivos da pasta'; }
+});
+$('#driveMatrixSelect').addEventListener('change',()=>{ if($('#driveMatrixSelect').value) $('#matrixFile').value=''; });
 $('#scanButton').addEventListener('click', async()=>{
-  const button=$('#scanButton'), matrix=$('#matrixFile').files[0], inventories=[...$('#inventoryFiles').files].filter(f=>f.name.toLowerCase().endsWith('.xlsx')&&!f.name.startsWith('~$'));
-  if(!matrix)return showNotice('Selecione a planilha matriz de compras.',true); if(!inventories.length)return showNotice('Selecione a pasta Sorocaba com os inventários .xlsx.',true);
+  const button=$('#scanButton');
+  let matrix=$('#matrixFile').files[0]; let inventories=manualInventoryFiles.length ? manualInventoryFiles : [...$('#inventoryFiles').files].filter(f=>f.name.toLowerCase().endsWith('.xlsx')&&!f.name.startsWith('~$'));
+  if (driveSourceLoaded) {
+    const matrixId=$('#driveMatrixSelect').value;
+    if(!matrixId)return showNotice('Escolha a planilha matriz entre os arquivos do Google Drive.',true);
+    button.disabled=true; button.textContent='Baixando arquivos…'; showNotice(`Baixando ${driveFiles.length} planilha(s) do Google Drive…`);
+    try { matrix=await downloadDriveFile(driveFiles.find(file=>file.id===matrixId)); inventories=await downloadDriveFiles(driveFiles.filter(file=>file.id!==matrixId)); }
+    catch(error) { showNotice(error.message||String(error),true); button.disabled=false; button.textContent='Processar auditoria'; return; }
+  }
+  if(!matrix)return showNotice('Selecione a planilha matriz de compras.',true); if(!inventories.length)return showNotice('Carregue a pasta do Google Drive ou selecione os inventários no computador.',true);
   button.disabled=true; button.textContent='Processando…'; showNotice(`Processando ${inventories.length} arquivo(s) localmente no navegador…`);
   try{const data=await executeAudit(matrix,inventories); render(data); const invalid=data.upload.invalid_files.length; showNotice(`Auditoria concluída: ${data.last_run.total_files} arquivo(s) analisado(s)${invalid?` · ${invalid} arquivo(s) ignorado(s) por nome inválido`:''}. Nenhuma planilha foi enviada ao servidor.`);}catch(error){console.error(error);showNotice(error.message||String(error),true);}finally{button.disabled=false;button.textContent='Processar auditoria';}
 });

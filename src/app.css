@@ -102,6 +102,9 @@ dialog::backdrop { background: #07152299; }.dialog-header { position: sticky; to
 .upload-card { display:flex; flex-direction:column; gap:9px; padding:16px; border:1px dashed #c9d7e8; border-radius:14px; background:#f8fbff; }
 .upload-card > span { font-weight:700; color:#24364b; }
 .upload-card small { color:#6b7d90; line-height:1.4; }
+.upload-card .manual-source { margin-top: 5px; color: #687789; font-size: 11px; font-weight: 700; }
+.upload-card .button { align-self: flex-start; }
+.upload-card .text-button { align-self: flex-start; font-size: 12px; }
 .file-input { width:100%; border:1px solid #d8e1ec; border-radius:10px; background:#fff; padding:10px; color:#31445b; }
 .file-input::file-selector-button { border:0; border-radius:8px; padding:9px 12px; margin-right:10px; background:#e7f2ff; color:#2563a6; font-weight:700; cursor:pointer; }
 @media (max-width: 800px) { .config-actions { width:100%; flex-wrap:wrap; } .inventory-download, .button.primary { flex:1 1 240px; } }
