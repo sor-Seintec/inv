@@ -7,6 +7,7 @@ const DRIVE_FOLDER_ID = '1q4PHnubRVIsJ3LwBCbMpJNFYj-ztcQ96';
 const GOOGLE_DRIVE_API_KEY = import.meta.env.VITE_GOOGLE_DRIVE_API_KEY || '';
 let driveFiles = [];
 let driveSourceLoaded = false;
+let forceDriveRefresh = false;
 let manualInventoryFiles = [];
 const selectedSchools = new Set();
 
@@ -15,11 +16,26 @@ const FOLDER_STORE_NAME = 'settings';
 
 function openFolderDb() {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(FOLDER_DB_NAME, 1);
-    request.onupgradeneeded = () => request.result.createObjectStore(FOLDER_STORE_NAME);
+    const request = indexedDB.open(FOLDER_DB_NAME, 2);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(FOLDER_STORE_NAME)) request.result.createObjectStore(FOLDER_STORE_NAME);
+      if (!request.result.objectStoreNames.contains('drive-files')) request.result.createObjectStore('drive-files');
+    };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
   });
+}
+
+async function getCachedDriveFile(file) {
+  const db = await openFolderDb();
+  const record = await new Promise((resolve, reject) => { const tx=db.transaction('drive-files','readonly'); const request=tx.objectStore('drive-files').get(file.id); request.onsuccess=()=>resolve(request.result||null); request.onerror=()=>reject(request.error); });
+  if (!record || record.modifiedTime !== file.modifiedTime) return null;
+  return new File([record.blob], record.name, { type: record.mimeType || file.mimeType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', lastModified: record.lastModified || Date.now() });
+}
+
+async function cacheDriveFile(file, blob) {
+  const db = await openFolderDb();
+  await new Promise((resolve, reject) => { const tx=db.transaction('drive-files','readwrite'); tx.objectStore('drive-files').put({ id:file.id, name:file.name, mimeType:file.mimeType, modifiedTime:file.modifiedTime, lastModified:file.modifiedTime ? Date.parse(file.modifiedTime) : Date.now(), blob }, file.id); tx.oncomplete=resolve; tx.onerror=()=>reject(tx.error); });
 }
 
 async function saveFolderHandle(handle) {
@@ -125,7 +141,11 @@ async function listDriveFiles() {
   return files.filter(file => file.name.toLowerCase().endsWith('.xlsx'));
 }
 
-async function downloadDriveFile(file) {
+async function downloadDriveFile(file, { forceRefresh = false } = {}) {
+  if (!forceRefresh) {
+    const cached = await getCachedDriveFile(file);
+    if (cached) return cached;
+  }
   const params = new URLSearchParams({ alt: 'media', key: GOOGLE_DRIVE_API_KEY });
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 45000);
@@ -135,15 +155,16 @@ async function downloadDriveFile(file) {
   finally { clearTimeout(timeout); }
   if (!response.ok) throw new Error(`Não foi possível baixar ${file.name} do Google Drive (${response.status}).`);
   const blob = await response.blob();
+  await cacheDriveFile(file, blob);
   return new File([blob], file.name, { type: file.mimeType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', lastModified: file.modifiedTime ? Date.parse(file.modifiedTime) : Date.now() });
 }
 
-async function downloadDriveFiles(files) {
+async function downloadDriveFiles(files, { forceRefresh = false } = {}) {
   const downloaded = [];
   const batchSize = 6;
   for (let index = 0; index < files.length; index += batchSize) {
     const batch = files.slice(index, index + batchSize);
-    downloaded.push(...await Promise.all(batch.map(downloadDriveFile)));
+    downloaded.push(...await Promise.all(batch.map(file => downloadDriveFile(file, { forceRefresh }))));
     $('#scanButton').textContent = `Baixando ${Math.min(index + batch.length, files.length)}/${files.length}…`;
   }
   return downloaded;
@@ -400,9 +421,9 @@ getFolderHandle().then(handle=>{$('#lastFolderButton').classList.toggle('hidden'
 $('#loadDriveButton').addEventListener('click', async()=>{
   const button=$('#loadDriveButton'); button.disabled=true; button.textContent='Carregando…';
   try {
-    driveFiles = await listDriveFiles(); driveSourceLoaded = true; manualInventoryFiles = []; renderDriveMatrixOptions();
-    $('#driveFileLabel').textContent = `${driveFiles.length} arquivo(s) .xlsx encontrado(s) na pasta do Google Drive.`;
-    showNotice(`Pasta do Google Drive carregada: ${driveFiles.length} arquivo(s) disponível(is). Escolha a matriz e processe a auditoria.`);
+    driveFiles = await listDriveFiles(); driveSourceLoaded = true; forceDriveRefresh = true; manualInventoryFiles = []; renderDriveMatrixOptions();
+    $('#driveFileLabel').textContent = `${driveFiles.length} arquivo(s) .xlsx encontrado(s). Clique em processar para baixar ou atualizar os arquivos.`;
+    showNotice(`Pasta do Google Drive carregada: ${driveFiles.length} arquivo(s) disponível(is). O próximo processamento atualizará o cache.`);
   } catch(error) { showNotice(error.message||String(error),true); }
   finally { button.disabled=false; button.textContent='Atualizar arquivos da pasta'; }
 });
@@ -414,7 +435,7 @@ $('#scanButton').addEventListener('click', async()=>{
     const matrixId=$('#driveMatrixSelect').value;
     if(!matrixId)return showNotice('Escolha a planilha matriz entre os arquivos do Google Drive.',true);
     button.disabled=true; button.textContent='Baixando arquivos…'; showNotice(`Baixando ${driveFiles.length} planilha(s) do Google Drive…`);
-    try { matrix=await downloadDriveFile(driveFiles.find(file=>file.id===matrixId)); inventories=await downloadDriveFiles(driveFiles.filter(file=>file.id!==matrixId)); }
+    try { matrix=await downloadDriveFile(driveFiles.find(file=>file.id===matrixId), { forceRefresh: forceDriveRefresh }); inventories=await downloadDriveFiles(driveFiles.filter(file=>file.id!==matrixId), { forceRefresh: forceDriveRefresh }); forceDriveRefresh = false; }
     catch(error) { showNotice(error.message||String(error),true); button.disabled=false; button.textContent='Processar auditoria'; return; }
   }
   if(!matrix)return showNotice('Selecione a planilha matriz de compras.',true); if(!inventories.length)return showNotice('Carregue a pasta do Google Drive ou selecione os inventários no computador.',true);
